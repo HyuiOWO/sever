@@ -4,15 +4,21 @@ import socketserver
 import os
 import subprocess
 import json
-import cgi
 import threading
 import time
-import psutil
 import platform
 from pathlib import Path
 import datetime
+import sys
+import urllib.parse
 
 class WebShellHandler(http.server.SimpleHTTPRequestHandler):
+    
+    # Biến để lưu thời gian bắt đầu
+    start_time = datetime.datetime.now()
+    
+    # Biến để quản lý process đang chạy
+    running_processes = {}
     
     def do_GET(self):
         if self.path == '/':
@@ -23,20 +29,27 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
             self.get_file_content()
         elif self.path == '/api/status':
             self.get_system_status()
+        elif self.path == '/api/running':
+            self.get_running_processes()
         else:
             super().do_GET()
     
     def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length) if content_length > 0 else b''
+        
         if self.path == '/api/run':
-            self.run_command()
+            self.run_command(post_data)
         elif self.path == '/api/file':
-            self.create_file()
+            self.create_file(post_data)
         elif self.path == '/api/upload':
-            self.upload_file()
+            self.upload_file(post_data)
         elif self.path == '/api/delete':
-            self.delete_file()
+            self.delete_file(post_data)
         elif self.path == '/api/ping':
-            self.test_ping()
+            self.test_ping(post_data)
+        elif self.path == '/api/stop':
+            self.stop_process(post_data)
         else:
             self.send_error(404)
     
@@ -98,14 +111,18 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     cursor: pointer;
                     display: flex;
                     justify-content: space-between;
+                    align-items: center;
                 }
                 .file-item:hover { background: #3d3d3d; }
                 .file-actions button { 
                     width: auto; 
-                    padding: 2px 8px; 
+                    padding: 4px 10px; 
                     margin-left: 5px; 
                     font-size: 12px;
                 }
+                .run-btn { background: #006600; }
+                .stop-btn { background: #cc0000; }
+                .stop-btn:hover { background: #ff0000; }
                 .success { color: #00ff00; }
                 .error { color: #ff0000; }
                 .warning { color: #ffff00; }
@@ -118,57 +135,114 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                 }
                 .status-grid {
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 10px;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 15px;
                     margin-top: 10px;
                 }
                 .status-item {
                     background: #1a1a1a;
-                    padding: 10px;
-                    border-radius: 5px;
+                    padding: 15px;
+                    border-radius: 8px;
                     border-left: 4px solid #00ff00;
+                    text-align: center;
                 }
                 .status-label {
-                    font-size: 12px;
+                    font-size: 14px;
                     color: #888;
-                    margin-bottom: 5px;
+                    margin-bottom: 8px;
                 }
                 .status-value {
-                    font-size: 14px;
+                    font-size: 16px;
                     font-weight: bold;
+                    color: #00ff00;
                 }
-                .progress-bar {
-                    width: 100%;
-                    height: 8px;
-                    background: #333;
-                    border-radius: 4px;
-                    margin-top: 5px;
-                    overflow: hidden;
-                }
-                .progress-fill {
-                    height: 100%;
-                    background: linear-gradient(90deg, #00ff00, #00cc00);
-                    transition: width 0.3s ease;
-                }
-                .cpu-usage { background: linear-gradient(90deg, #ff6b6b, #ee5a24); }
-                .ram-usage { background: linear-gradient(90deg, #00ff00, #00cc00); }
-                .disk-usage { background: linear-gradient(90deg, #00ffff, #0099cc); }
                 
                 .refresh-btn {
                     background: #0088cc;
-                    padding: 5px 10px;
-                    font-size: 12px;
-                    margin-top: 10px;
+                    padding: 8px 15px;
+                    font-size: 14px;
+                    margin-top: 15px;
+                    width: auto;
                 }
                 .refresh-btn:hover { background: #00aaff; }
                 
                 .ping-test {
                     background: #006600;
-                    padding: 5px 10px;
-                    font-size: 12px;
-                    margin-top: 5px;
+                    padding: 8px 15px;
+                    font-size: 14px;
+                    margin-top: 10px;
+                    width: auto;
                 }
                 .ping-test:hover { background: #008800; }
+                
+                /* Loading Animation */
+                .loading {
+                    display: inline-block;
+                    width: 20px;
+                    height: 20px;
+                    border: 3px solid #ffffff33;
+                    border-radius: 50%;
+                    border-top-color: #00ff00;
+                    animation: spin 1s ease-in-out infinite;
+                    margin-right: 10px;
+                }
+                
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+                
+                .pulse {
+                    animation: pulse 1.5s infinite;
+                }
+                
+                @keyframes pulse {
+                    0% { opacity: 1; }
+                    50% { opacity: 0.5; }
+                    100% { opacity: 1; }
+                }
+                
+                .command-status {
+                    background: #004400;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin: 10px 0;
+                    border-left: 4px solid #00ff00;
+                }
+                
+                .live-output {
+                    background: #000;
+                    border: 1px solid #00ff00;
+                    padding: 10px;
+                    border-radius: 5px;
+                    max-height: 300px;
+                    overflow-y: auto;
+                    font-family: 'Courier New', monospace;
+                    font-size: 12px;
+                }
+                
+                .running-processes {
+                    background: #002200;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin: 10px 0;
+                    border-left: 4px solid #00ff00;
+                }
+                
+                .process-item {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 5px;
+                    border-bottom: 1px solid #004400;
+                }
+                
+                .bg-process {
+                    background: #004400;
+                    padding: 5px 10px;
+                    border-radius: 3px;
+                    font-size: 12px;
+                    color: #00ff00;
+                }
             </style>
         </head>
         <body>
@@ -186,42 +260,22 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                         <div id="statusContent">
                             <div class="status-grid">
                                 <div class="status-item">
-                                    <div class="status-label">🖥️ CPU Usage</div>
-                                    <div class="status-value" id="cpuUsage">Loading...</div>
-                                    <div class="progress-bar"><div class="progress-fill cpu-usage" id="cpuBar" style="width: 0%"></div></div>
-                                </div>
-                                <div class="status-item">
-                                    <div class="status-label">💾 RAM Usage</div>
-                                    <div class="status-value" id="ramUsage">Loading...</div>
-                                    <div class="progress-bar"><div class="progress-fill ram-usage" id="ramBar" style="width: 0%"></div></div>
-                                </div>
-                                <div class="status-item">
-                                    <div class="status-label">💽 Disk Usage</div>
-                                    <div class="status-value" id="diskUsage">Loading...</div>
-                                    <div class="progress-bar"><div class="progress-fill disk-usage" id="diskBar" style="width: 0%"></div></div>
+                                    <div class="status-label">⏰ Server Uptime</div>
+                                    <div class="status-value" id="uptime">Loading...</div>
                                 </div>
                                 <div class="status-item">
                                     <div class="status-label">🌐 Network Ping</div>
                                     <div class="status-value" id="pingStatus">Click to test</div>
                                     <button class="ping-test" onclick="testPing()">Test Ping Google</button>
                                 </div>
-                                <div class="status-item">
-                                    <div class="status-label">⏰ Uptime</div>
-                                    <div class="status-value" id="uptime">Loading...</div>
-                                </div>
-                                <div class="status-item">
-                                    <div class="status-label">📱 Platform</div>
-                                    <div class="status-value" id="platform">Loading...</div>
-                                </div>
-                                <div class="status-item">
-                                    <div class="status-label">🔥 Processes</div>
-                                    <div class="status-value" id="processCount">Loading...</div>
-                                </div>
-                                <div class="status-item">
-                                    <div class="status-label">🌡️ CPU Cores</div>
-                                    <div class="status-value" id="cpuCores">Loading...</div>
-                                </div>
                             </div>
+                            
+                            <!-- Running Processes -->
+                            <div class="running-processes" id="runningProcesses" style="display: none;">
+                                <h4>🔄 Running Processes:</h4>
+                                <div id="processList"></div>
+                            </div>
+                            
                             <button class="refresh-btn" onclick="refreshStatus()">🔄 Refresh Status</button>
                         </div>
                     </div>
@@ -232,14 +286,27 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     <div class="panel">
                         <h3>🔧 Execute Command</h3>
                         <select id="commandType">
-                            <option value="shell">Shell Command</option>
+                            <option value="shell">Shell Command (Blocking)</option>
+                            <option value="shell-bg">Shell Command (Background)</option>
                             <option value="python">Python Script</option>
                             <option value="node">Node.js</option>
                             <option value="php">PHP</option>
                             <option value="bash">Bash Script</option>
                         </select>
                         <textarea id="command" placeholder="Enter command or code..." rows="5"></textarea>
-                        <button onclick="runCommand()">▶ Run</button>
+                        <button onclick="runCommand()">▶ Run Command</button>
+                        
+                        <!-- Command Status -->
+                        <div id="commandStatus" style="display: none;">
+                            <div class="command-status">
+                                <div class="loading"></div>
+                                <span id="statusText">Executing command...</span>
+                            </div>
+                            <div class="live-output" id="liveOutput">
+                                <div class="pulse">Waiting for output...</div>
+                            </div>
+                        </div>
+                        
                         <div class="output" id="output"></div>
                     </div>
 
@@ -261,6 +328,8 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
             <script>
                 let currentFile = '';
                 let statusInterval;
+                let commandRunning = false;
+                let runningFiles = {};
                 
                 // Load initial data
                 document.addEventListener('DOMContentLoaded', function() {
@@ -268,10 +337,12 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     getCurrentDir();
                     refreshStatus();
                     updateServerTime();
+                    checkRunningProcesses();
                     
                     // Auto refresh status every 5 seconds
                     statusInterval = setInterval(refreshStatus, 5000);
                     setInterval(updateServerTime, 1000);
+                    setInterval(checkRunningProcesses, 3000);
                 });
 
                 function updateServerTime() {
@@ -287,7 +358,7 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     })
                     .then(r => r.json())
                     .then(data => {
-                        document.getElementById('currentDir').textContent = data.output;
+                        document.getElementById('currentDir').textContent = data.output.trim();
                     });
                 }
 
@@ -295,38 +366,64 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     fetch('/api/status')
                         .then(response => response.json())
                         .then(data => {
-                            // CPU
-                            document.getElementById('cpuUsage').textContent = `${data.cpu_usage}%`;
-                            document.getElementById('cpuBar').style.width = `${data.cpu_usage}%`;
-                            
-                            // RAM
-                            const ramUsedGB = (data.ram_used / 1024 / 1024 / 1024).toFixed(2);
-                            const ramTotalGB = (data.ram_total / 1024 / 1024 / 1024).toFixed(2);
-                            const ramPercent = data.ram_percent;
-                            document.getElementById('ramUsage').textContent = `${ramUsedGB}GB / ${ramTotalGB}GB (${ramPercent}%)`;
-                            document.getElementById('ramBar').style.width = `${ramPercent}%`;
-                            
-                            // Disk
-                            const diskUsedGB = (data.disk_used / 1024 / 1024 / 1024).toFixed(2);
-                            const diskTotalGB = (data.disk_total / 1024 / 1024 / 1024).toFixed(2);
-                            const diskPercent = data.disk_percent;
-                            document.getElementById('diskUsage').textContent = `${diskUsedGB}GB / ${diskTotalGB}GB (${diskPercent}%)`;
-                            document.getElementById('diskBar').style.width = `${diskPercent}%`;
-                            
-                            // Other info
                             document.getElementById('uptime').textContent = data.uptime;
-                            document.getElementById('platform').textContent = data.platform;
-                            document.getElementById('processCount').textContent = data.process_count;
-                            document.getElementById('cpuCores').textContent = data.cpu_cores;
                         })
                         .catch(error => {
                             console.error('Status update failed:', error);
                         });
                 }
 
+                function checkRunningProcesses() {
+                    fetch('/api/running')
+                        .then(response => response.json())
+                        .then(data => {
+                            const processesContainer = document.getElementById('runningProcesses');
+                            const processList = document.getElementById('processList');
+                            
+                            if (data.processes && Object.keys(data.processes).length > 0) {
+                                processesContainer.style.display = 'block';
+                                processList.innerHTML = '';
+                                
+                                Object.entries(data.processes).forEach(([filename, pid]) => {
+                                    const processItem = document.createElement('div');
+                                    processItem.className = 'process-item';
+                                    processItem.innerHTML = `
+                                        <span>📄 ${filename} (PID: ${pid})</span>
+                                        <button class="stop-btn" onclick="stopProcess('${filename}')">🛑 Stop</button>
+                                    `;
+                                    processList.appendChild(processItem);
+                                });
+                            } else {
+                                processesContainer.style.display = 'none';
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Check processes failed:', error);
+                        });
+                }
+
+                function stopProcess(filename) {
+                    if (confirm(`Stop ${filename}?`)) {
+                        fetch('/api/stop', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ filename: filename })
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            alert(data.message);
+                            checkRunningProcesses();
+                            loadFiles(); // Refresh file list to update buttons
+                        })
+                        .catch(error => {
+                            alert('Error stopping process: ' + error);
+                        });
+                    }
+                }
+
                 function testPing() {
                     const pingElement = document.getElementById('pingStatus');
-                    pingElement.innerHTML = '⏳ Testing ping...';
+                    pingElement.innerHTML = '<div class="loading"></div>Testing ping...';
                     
                     fetch('/api/ping', {
                         method: 'POST',
@@ -347,13 +444,31 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                 }
 
                 function runCommand() {
+                    if (commandRunning) {
+                        alert('Please wait for the current command to finish...');
+                        return;
+                    }
+                    
                     const commandType = document.getElementById('commandType').value;
                     const command = document.getElementById('command').value;
                     const output = document.getElementById('output');
+                    const commandStatus = document.getElementById('commandStatus');
+                    const liveOutput = document.getElementById('liveOutput');
                     
-                    output.innerHTML = '⏳ Running...';
+                    if (!command.trim()) {
+                        alert('Please enter a command');
+                        return;
+                    }
+                    
+                    // Hiển thị trạng thái đang chạy
+                    commandRunning = true;
+                    commandStatus.style.display = 'block';
+                    output.innerHTML = '';
+                    liveOutput.innerHTML = '<div class="pulse">Starting command execution...</div>';
                     
                     let finalCommand = command;
+                    let isBackground = false;
+                    
                     switch(commandType) {
                         case 'python':
                             finalCommand = `python3 -c "${command.replace(/"/g, '\\"')}"`;
@@ -367,24 +482,77 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                         case 'bash':
                             finalCommand = `bash -c "${command.replace(/"/g, '\\"')}"`;
                             break;
+                        case 'shell-bg':
+                            finalCommand = command;
+                            isBackground = true;
+                            break;
+                        default:
+                            finalCommand = command;
                     }
+                    
+                    // Cập nhật trạng thái
+                    document.getElementById('statusText').textContent = `Executing: ${finalCommand}`;
+                    
+                    // Tạo hiệu ứng loading real-time
+                    let dots = 0;
+                    const loadingInterval = setInterval(() => {
+                        dots = (dots + 1) % 4;
+                        const statusElement = document.getElementById('statusText');
+                        if (statusElement) {
+                            statusElement.textContent = `Executing${'.'.repeat(dots)}`;
+                        }
+                    }, 500);
+                    
+                    const requestBody = {
+                        command: finalCommand,
+                        background: isBackground
+                    };
                     
                     fetch('/api/run', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ command: finalCommand })
+                        body: JSON.stringify(requestBody)
                     })
                     .then(response => response.json())
                     .then(data => {
-                        output.innerHTML = `<span class="success">✓ Command executed successfully</span>\n\n${data.output}`;
-                        if (data.error) {
-                            output.innerHTML += `\n\n<span class="error">✗ Error:</span>\n${data.error}`;
+                        clearInterval(loadingInterval);
+                        commandRunning = false;
+                        
+                        if (data.background) {
+                            // Background process
+                            output.innerHTML = `<span class="success">✓ Command started in background (PID: ${data.pid})</span>`;
+                            liveOutput.innerHTML = `<div class="success">Background process started ✓</div>`;
+                            checkRunningProcesses();
+                        } else {
+                            // Normal process
+                            let resultHTML = `<span class="success">✓ Command completed successfully</span>\n\n`;
+                            resultHTML += `<strong>Output:</strong>\n${data.output}`;
+                            
+                            if (data.error) {
+                                resultHTML += `\n\n<span class="error">✗ Errors:</span>\n${data.error}`;
+                            }
+                            
+                            output.innerHTML = resultHTML;
+                            liveOutput.innerHTML = `<div class="success">Command completed ✓</div>`;
                         }
-                        loadFiles(); // Refresh file list
-                        refreshStatus(); // Refresh status
+                        
+                        // Ẩn status sau 3 giây
+                        setTimeout(() => {
+                            commandStatus.style.display = 'none';
+                        }, 3000);
+                        
+                        loadFiles();
+                        refreshStatus();
                     })
                     .catch(error => {
+                        clearInterval(loadingInterval);
+                        commandRunning = false;
                         output.innerHTML = `<span class="error">✗ Request failed: ${error}</span>`;
+                        liveOutput.innerHTML = `<div class="error">Command failed ✗</div>`;
+                        
+                        setTimeout(() => {
+                            commandStatus.style.display = 'none';
+                        }, 3000);
                     });
                 }
 
@@ -395,18 +563,33 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                             const fileList = document.getElementById('fileList');
                             fileList.innerHTML = '<h4>Files in current directory:</h4>';
                             
-                            files.forEach(file => {
-                                const fileItem = document.createElement('div');
-                                fileItem.className = 'file-item';
-                                fileItem.innerHTML = `
-                                    <span onclick="viewFile('${file}')">📄 ${file}</span>
-                                    <div class="file-actions">
-                                        <button onclick="runFile('${file}')">Run</button>
-                                        <button onclick="deleteFile('${file}')">Delete</button>
-                                    </div>
-                                `;
-                                fileList.appendChild(fileItem);
-                            });
+                            // Get running processes to update buttons
+                            fetch('/api/running')
+                                .then(r => r.json())
+                                .then(processData => {
+                                    const runningProcesses = processData.processes || {};
+                                    
+                                    files.forEach(file => {
+                                        const fileItem = document.createElement('div');
+                                        fileItem.className = 'file-item';
+                                        
+                                        const isRunning = runningProcesses[file];
+                                        const buttonText = isRunning ? '🛑 Stop' : '▶ Run';
+                                        const buttonClass = isRunning ? 'stop-btn' : 'run-btn';
+                                        
+                                        fileItem.innerHTML = `
+                                            <span onclick="viewFile('${file}')">📄 ${file}</span>
+                                            <div class="file-actions">
+                                                <button class="${buttonClass}" onclick="${isRunning ? `stopProcess('${file}')` : `runFile('${file}')`}">${buttonText}</button>
+                                                <button onclick="deleteFile('${file}')">Delete</button>
+                                            </div>
+                                        `;
+                                        fileList.appendChild(fileItem);
+                                    });
+                                })
+                                .catch(error => {
+                                    console.error('Error loading running processes:', error);
+                                });
                         });
                 }
 
@@ -424,6 +607,11 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     const filename = document.getElementById('filename').value;
                     const content = document.getElementById('filecontent').value;
                     
+                    if (!filename.trim()) {
+                        alert('Please enter a filename');
+                        return;
+                    }
+                    
                     fetch('/api/file', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -439,27 +627,84 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                 }
 
                 function runFile(filename) {
-                    const output = document.getElementById('output');
-                    output.innerHTML = `⏳ Running ${filename}...`;
+                    if (commandRunning) {
+                        alert('Please wait for the current command to finish...');
+                        return;
+                    }
                     
-                    let command = `./${filename}`;
+                    const output = document.getElementById('output');
+                    const commandStatus = document.getElementById('commandStatus');
+                    const liveOutput = document.getElementById('liveOutput');
+                    
+                    commandRunning = true;
+                    commandStatus.style.display = 'block';
+                    output.innerHTML = '';
+                    liveOutput.innerHTML = '<div class="pulse">Preparing to run file...</div>';
+                    
+                    let command = '';
                     if (filename.endsWith('.py')) command = `python3 ${filename}`;
-                    if (filename.endsWith('.js')) command = `node ${filename}`;
-                    if (filename.endsWith('.php')) command = `php ${filename}`;
-                    if (filename.endsWith('.sh')) command = `bash ${filename}`;
+                    else if (filename.endsWith('.js')) command = `node ${filename}`;
+                    else if (filename.endsWith('.php')) command = `php ${filename}`;
+                    else if (filename.endsWith('.sh')) command = `bash ${filename}`;
+                    else command = `./${filename}`;
+                    
+                    document.getElementById('statusText').textContent = `Running: ${command}`;
+                    
+                    let dots = 0;
+                    const loadingInterval = setInterval(() => {
+                        dots = (dots + 1) % 4;
+                        document.getElementById('statusText').textContent = `Running${'.'.repeat(dots)}`;
+                    }, 500);
+                    
+                    // Run in background to avoid blocking web server
+                    const requestBody = {
+                        command: command,
+                        background: true,
+                        filename: filename
+                    };
                     
                     fetch('/api/run', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ command })
+                        body: JSON.stringify(requestBody)
                     })
                     .then(response => response.json())
                     .then(data => {
-                        output.innerHTML = `<span class="success">✓ ${filename} executed</span>\n\n${data.output}`;
-                        if (data.error) {
-                            output.innerHTML += `\n\n<span class="error">✗ Error:</span>\n${data.error}`;
+                        clearInterval(loadingInterval);
+                        commandRunning = false;
+                        
+                        if (data.background) {
+                            output.innerHTML = `<span class="success">✓ ${filename} started in background (PID: ${data.pid})</span>`;
+                            liveOutput.innerHTML = `<div class="success">File running in background ✓</div>`;
+                        } else {
+                            let resultHTML = `<span class="success">✓ ${filename} executed</span>\n\n`;
+                            resultHTML += `<strong>Output:</strong>\n${data.output}`;
+                            
+                            if (data.error) {
+                                resultHTML += `\n\n<span class="error">✗ Errors:</span>\n${data.error}`;
+                            }
+                            
+                            output.innerHTML = resultHTML;
+                            liveOutput.innerHTML = `<div class="success">File execution completed ✓</div>`;
                         }
+                        
+                        setTimeout(() => {
+                            commandStatus.style.display = 'none';
+                        }, 3000);
+                        
+                        loadFiles(); // Refresh to update buttons
+                        checkRunningProcesses();
                         refreshStatus();
+                    })
+                    .catch(error => {
+                        clearInterval(loadingInterval);
+                        commandRunning = false;
+                        output.innerHTML = `<span class="error">✗ Failed to run file: ${error}</span>`;
+                        liveOutput.innerHTML = `<div class="error">File execution failed ✗</div>`;
+                        
+                        setTimeout(() => {
+                            commandStatus.style.display = 'none';
+                        }, 3000);
                     });
                 }
 
@@ -512,39 +757,14 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
     
     def get_system_status(self):
         try:
-            # CPU usage
-            cpu_usage = psutil.cpu_percent(interval=1)
-            
-            # RAM usage
-            ram = psutil.virtual_memory()
-            ram_used = ram.used
-            ram_total = ram.total
-            ram_percent = ram.percent
-            
-            # Disk usage
-            disk = psutil.disk_usage('.')
-            disk_used = disk.used
-            disk_total = disk.total
-            disk_percent = disk.percent
-            
-            # System info
-            uptime = datetime.datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
-            platform_info = f"{platform.system()} {platform.release()}"
-            process_count = len(psutil.pids())
-            cpu_cores = psutil.cpu_count()
+            # Tính thời gian uptime
+            current_time = datetime.datetime.now()
+            uptime_delta = current_time - self.start_time
+            uptime_str = str(uptime_delta).split('.')[0]  # Bỏ phần microseconds
             
             status_data = {
-                'cpu_usage': round(cpu_usage, 1),
-                'ram_used': ram_used,
-                'ram_total': ram_total,
-                'ram_percent': ram_percent,
-                'disk_used': disk_used,
-                'disk_total': disk_total,
-                'disk_percent': disk_percent,
-                'uptime': uptime,
-                'platform': platform_info,
-                'process_count': process_count,
-                'cpu_cores': cpu_cores
+                'uptime': uptime_str,
+                'start_time': self.start_time.strftime("%Y-%m-%d %H:%M:%S")
             }
             
             self.send_json_response(status_data)
@@ -552,19 +772,51 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_json_response({'error': f'Status error: {str(e)}'}, 500)
     
-    def test_ping(self):
+    def get_running_processes(self):
+        """Get list of running processes"""
         try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
+            self.send_json_response({
+                'processes': self.running_processes
+            })
+        except Exception as e:
+            self.send_json_response({'error': str(e)}, 500)
+    
+    def stop_process(self, post_data):
+        """Stop a running process"""
+        try:
             data = json.loads(post_data.decode('utf-8'))
+            filename = data.get('filename', '')
             
+            if filename in self.running_processes:
+                pid = self.running_processes[filename]
+                try:
+                    # Kill the process
+                    os.kill(pid, 9)
+                    # Remove from running processes
+                    del self.running_processes[filename]
+                    self.send_json_response({'message': f'Stopped {filename} (PID: {pid})'})
+                except ProcessLookupError:
+                    # Process already dead
+                    del self.running_processes[filename]
+                    self.send_json_response({'message': f'Process {filename} was already stopped'})
+                except Exception as e:
+                    self.send_json_response({'error': f'Error stopping process: {str(e)}'}, 500)
+            else:
+                self.send_json_response({'error': 'Process not found'}, 404)
+                
+        except Exception as e:
+            self.send_json_response({'error': str(e)}, 500)
+    
+    def test_ping(self, post_data):
+        try:
+            data = json.loads(post_data.decode('utf-8'))
             host = data.get('host', 'google.com')
             
             # Ping command
             if platform.system().lower() == 'windows':
-                command = f"ping -n 1 {host}"
+                command = f"ping -n 2 {host}"
             else:
-                command = f"ping -c 1 {host}"
+                command = f"ping -c 2 {host}"
             
             process = subprocess.Popen(
                 command,
@@ -620,40 +872,60 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_json_response({'error': str(e)}, 500)
     
-    def run_command(self):
+    def run_command(self, post_data):
         try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
             data = json.loads(post_data.decode('utf-8'))
-            
             command = data.get('command', '')
+            run_in_background = data.get('background', False)
+            filename = data.get('filename', '')
             
-            # Execute command
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            stdout, stderr = process.communicate()
-            
-            response = {
-                'output': stdout,
-                'error': stderr,
-                'returncode': process.returncode
-            }
-            self.send_json_response(response)
+            if run_in_background:
+                # Run command in background to avoid blocking web server
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                # Store process info
+                if filename:
+                    self.running_processes[filename] = process.pid
+                
+                response = {
+                    'background': True,
+                    'pid': process.pid,
+                    'filename': filename,
+                    'message': f'Process started with PID: {process.pid}'
+                }
+                self.send_json_response(response)
+                
+            else:
+                # Run command normally (blocking)
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                stdout, stderr = process.communicate()
+                
+                response = {
+                    'output': stdout,
+                    'error': stderr,
+                    'returncode': process.returncode,
+                    'background': False
+                }
+                self.send_json_response(response)
             
         except Exception as e:
             self.send_json_response({'error': str(e)}, 500)
     
-    def create_file(self):
+    def create_file(self, post_data):
         try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
             data = json.loads(post_data.decode('utf-8'))
-            
             filename = data.get('filename', '')
             content = data.get('content', '')
             
@@ -669,12 +941,9 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_json_response({'error': str(e)}, 500)
     
-    def delete_file(self):
+    def delete_file(self, post_data):
         try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
             data = json.loads(post_data.decode('utf-8'))
-            
             filename = data.get('filename', '')
             
             if os.path.exists(filename):
@@ -686,23 +955,29 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_json_response({'error': str(e)}, 500)
     
-    def upload_file(self):
+    def upload_file(self, post_data):
         try:
-            form = cgi.FieldStorage(
-                fp=self.rfile,
-                headers=self.headers,
-                environ={'REQUEST_METHOD': 'POST'}
-            )
-            
-            file_item = form['file']
-            if file_item.filename:
-                filename = os.path.basename(file_item.filename)
-                with open(filename, 'wb') as f:
-                    f.write(file_item.file.read())
+            # Simple file upload implementation
+            content_type = self.headers.get('Content-Type', '')
+            if 'multipart/form-data' in content_type:
+                # Parse filename from multipart data
+                lines = post_data.split(b'\r\n')
+                filename = None
+                for i, line in enumerate(lines):
+                    if b'filename="' in line:
+                        filename = line.split(b'filename="')[1].split(b'"')[0].decode()
+                        # File content starts after two lines
+                        file_content = b'\r\n'.join(lines[i+3:-2])
+                        break
                 
-                self.send_json_response({'message': f'File {filename} uploaded successfully'})
+                if filename:
+                    with open(filename, 'wb') as f:
+                        f.write(file_content)
+                    self.send_json_response({'message': f'File {filename} uploaded successfully'})
+                else:
+                    self.send_json_response({'error': 'No file found in upload'}, 400)
             else:
-                self.send_json_response({'error': 'No file uploaded'}, 400)
+                self.send_json_response({'error': 'Invalid content type'}, 400)
                 
         except Exception as e:
             self.send_json_response({'error': str(e)}, 500)
@@ -728,22 +1003,15 @@ def get_local_ip():
 def main():
     PORT = 8080
     
-    # Install psutil if not available
-    try:
-        import psutil
-    except ImportError:
-        print("Installing psutil...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "psutil"])
-        import psutil
-    
     # Get local IP
     local_ip = get_local_ip()
     
     print("🚀 Starting Termux Web Shell Server...")
     print(f"📱 Local: http://localhost:{PORT}")
     print(f"🌐 Network: http://{local_ip}:{PORT}")
-    print(f"📊 System monitoring enabled")
+    print(f"⏰ Server started at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("📂 Serving from:", os.getcwd())
+    print("🔥 Background processes enabled")
     print("⏹️  Press Ctrl+C to stop")
     
     with socketserver.TCPServer(("", PORT), WebShellHandler) as httpd:
@@ -751,6 +1019,13 @@ def main():
             httpd.serve_forever()
         except KeyboardInterrupt:
             print("\n🛑 Server stopped")
+            # Kill all running processes when server stops
+            for filename, pid in WebShellHandler.running_processes.items():
+                try:
+                    os.kill(pid, 9)
+                    print(f"🛑 Killed {filename} (PID: {pid})")
+                except:
+                    pass
 
 if __name__ == "__main__":
     main()
