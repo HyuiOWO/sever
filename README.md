@@ -1,31 +1,31 @@
-🚀 Termux Web Shell Server
+# 🚀 Termux Web Shell Server
 
 <div align="center">
 
-https://img.shields.io/badge/Python-3.8+-blue.svg
-https://img.shields.io/badge/Termux-✅-green.svg
-https://img.shields.io/badge/Web%20Interface-✅-success.svg
-https://img.shields.io/badge/Mobile%20Friendly-✅-9cf.svg
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![Termux](https://img.shields.io/badge/Termux-✅-green.svg)
+![Web Interface](https://img.shields.io/badge/Web%20Interface-✅-success.svg)
+![Mobile Friendly](https://img.shields.io/badge/Mobile%20Friendly-✅-9cf.svg)
 
-Biến điện thoại Android thành server đa năng với giao diện web chuyên nghiệp
+**Biến điện thoại Android thành server đa năng với giao diện web chuyên nghiệp**
 
-Quản lý files, chạy commands, thực thi scripts trực tiếp từ trình duyệt
+*Quản lý files, chạy commands, thực thi scripts trực tiếp từ trình duyệt*
 
-https://img.shields.io/badge/⭐-Tính_Năng-yellow
-https://img.shields.io/badge/⚙️-Cài_Đặt_Nhanh-blue
-https://img.shields.io/badge/🚀-Hướng_Dẫn_Sử_Dụng-orange
+[![Tính Năng](https://img.shields.io/badge/⭐-Tính_Năng-yellow)](#-tính-năng)
+[![Cài Đặt](https://img.shields.io/badge/⚙️-Cài_Đặt_Nhanh-blue)](#-cài-đặt-nhanh)
+[![Sử Dụng](https://img.shields.io/badge/🚀-Hướng_Dẫn_Sử_Dụng-orange)](#-hướng-dẫn-sử-dụng)
 
 </div>
 
-📖 Giới Thiệu
+## 📖 Giới Thiệu
 
-Termux Web Shell Server là giải pháp toàn diện biến điện thoại Android của bạn thành một web server mạnh mẽ. Với giao diện web trực quan, bạn có thể:
+**Termux Web Shell Server** là giải pháp toàn diện biến điện thoại Android của bạn thành một web server mạnh mẽ. Với giao diện web trực quan, bạn có thể:
 
-· 🖥️ Truy cập và điều khiển Termux từ bất kỳ thiết bị nào trong mạng LAN
-· ⚡ Thực thi commands shell, Python, Node.js, PHP trực tiếp từ browser
-· 📁 Quản lý files - tạo, xóa, upload, chỉnh sửa file dễ dàng
-· 🔄 Chạy đa nhiệm - nhiều scripts cùng lúc không làm gián đoạn server
-· 📱 Tối ưu mobile - giao diện responsive hoạt động tốt trên mọi thiết bị
+- 🖥️ **Truy cập và điều khiển** Termux từ bất kỳ thiết bị nào trong mạng LAN
+- ⚡ **Thực thi commands** shell, Python, Node.js, PHP trực tiếp từ browser
+- 📁 **Quản lý files** - tạo, xóa, upload, chỉnh sửa file dễ dàng
+- 🔄 **Chạy đa nhiệm** - nhiều scripts cùng lúc không làm gián đoạn server
+- 📱 **Tối ưu mobile** - giao diện responsive hoạt động tốt trên mọi thiết bị
 
 Ứng dụng thực tế:
 
