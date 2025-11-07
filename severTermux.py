@@ -6,7 +6,11 @@ import subprocess
 import json
 import cgi
 import threading
+import time
+import psutil
+import platform
 from pathlib import Path
+import datetime
 
 class WebShellHandler(http.server.SimpleHTTPRequestHandler):
     
@@ -17,6 +21,8 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
             self.list_files()
         elif self.path.startswith('/api/file/'):
             self.get_file_content()
+        elif self.path == '/api/status':
+            self.get_system_status()
         else:
             super().do_GET()
     
@@ -29,6 +35,8 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
             self.upload_file()
         elif self.path == '/api/delete':
             self.delete_file()
+        elif self.path == '/api/ping':
+            self.test_ping()
         else:
             self.send_error(404)
     
@@ -101,6 +109,66 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                 .success { color: #00ff00; }
                 .error { color: #ff0000; }
                 .warning { color: #ffff00; }
+                .info { color: #00ffff; }
+                
+                /* Status Panel Styles */
+                .status-panel { 
+                    background: linear-gradient(135deg, #2d2d2d, #1a1a1a);
+                    border: 1px solid #00ff00;
+                }
+                .status-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 10px;
+                    margin-top: 10px;
+                }
+                .status-item {
+                    background: #1a1a1a;
+                    padding: 10px;
+                    border-radius: 5px;
+                    border-left: 4px solid #00ff00;
+                }
+                .status-label {
+                    font-size: 12px;
+                    color: #888;
+                    margin-bottom: 5px;
+                }
+                .status-value {
+                    font-size: 14px;
+                    font-weight: bold;
+                }
+                .progress-bar {
+                    width: 100%;
+                    height: 8px;
+                    background: #333;
+                    border-radius: 4px;
+                    margin-top: 5px;
+                    overflow: hidden;
+                }
+                .progress-fill {
+                    height: 100%;
+                    background: linear-gradient(90deg, #00ff00, #00cc00);
+                    transition: width 0.3s ease;
+                }
+                .cpu-usage { background: linear-gradient(90deg, #ff6b6b, #ee5a24); }
+                .ram-usage { background: linear-gradient(90deg, #00ff00, #00cc00); }
+                .disk-usage { background: linear-gradient(90deg, #00ffff, #0099cc); }
+                
+                .refresh-btn {
+                    background: #0088cc;
+                    padding: 5px 10px;
+                    font-size: 12px;
+                    margin-top: 10px;
+                }
+                .refresh-btn:hover { background: #00aaff; }
+                
+                .ping-test {
+                    background: #006600;
+                    padding: 5px 10px;
+                    font-size: 12px;
+                    margin-top: 5px;
+                }
+                .ping-test:hover { background: #008800; }
             </style>
         </head>
         <body>
@@ -108,8 +176,57 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                 <div class="header">
                     <h1>🚀 Termux Web Shell Server</h1>
                     <p>Current Directory: <span id="currentDir"></span></p>
+                    <p>Server Time: <span id="serverTime"></span></p>
                 </div>
                 
+                <div class="panels">
+                    <!-- Status Panel -->
+                    <div class="panel status-panel">
+                        <h3>📊 System Status</h3>
+                        <div id="statusContent">
+                            <div class="status-grid">
+                                <div class="status-item">
+                                    <div class="status-label">🖥️ CPU Usage</div>
+                                    <div class="status-value" id="cpuUsage">Loading...</div>
+                                    <div class="progress-bar"><div class="progress-fill cpu-usage" id="cpuBar" style="width: 0%"></div></div>
+                                </div>
+                                <div class="status-item">
+                                    <div class="status-label">💾 RAM Usage</div>
+                                    <div class="status-value" id="ramUsage">Loading...</div>
+                                    <div class="progress-bar"><div class="progress-fill ram-usage" id="ramBar" style="width: 0%"></div></div>
+                                </div>
+                                <div class="status-item">
+                                    <div class="status-label">💽 Disk Usage</div>
+                                    <div class="status-value" id="diskUsage">Loading...</div>
+                                    <div class="progress-bar"><div class="progress-fill disk-usage" id="diskBar" style="width: 0%"></div></div>
+                                </div>
+                                <div class="status-item">
+                                    <div class="status-label">🌐 Network Ping</div>
+                                    <div class="status-value" id="pingStatus">Click to test</div>
+                                    <button class="ping-test" onclick="testPing()">Test Ping Google</button>
+                                </div>
+                                <div class="status-item">
+                                    <div class="status-label">⏰ Uptime</div>
+                                    <div class="status-value" id="uptime">Loading...</div>
+                                </div>
+                                <div class="status-item">
+                                    <div class="status-label">📱 Platform</div>
+                                    <div class="status-value" id="platform">Loading...</div>
+                                </div>
+                                <div class="status-item">
+                                    <div class="status-label">🔥 Processes</div>
+                                    <div class="status-value" id="processCount">Loading...</div>
+                                </div>
+                                <div class="status-item">
+                                    <div class="status-label">🌡️ CPU Cores</div>
+                                    <div class="status-value" id="cpuCores">Loading...</div>
+                                </div>
+                            </div>
+                            <button class="refresh-btn" onclick="refreshStatus()">🔄 Refresh Status</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="panels">
                     <!-- Command Panel -->
                     <div class="panel">
@@ -143,12 +260,24 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
 
             <script>
                 let currentFile = '';
+                let statusInterval;
                 
                 // Load initial data
                 document.addEventListener('DOMContentLoaded', function() {
                     loadFiles();
                     getCurrentDir();
+                    refreshStatus();
+                    updateServerTime();
+                    
+                    // Auto refresh status every 5 seconds
+                    statusInterval = setInterval(refreshStatus, 5000);
+                    setInterval(updateServerTime, 1000);
                 });
+
+                function updateServerTime() {
+                    const now = new Date();
+                    document.getElementById('serverTime').textContent = now.toLocaleString();
+                }
 
                 function getCurrentDir() {
                     fetch('/api/run', {
@@ -159,6 +288,61 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     .then(r => r.json())
                     .then(data => {
                         document.getElementById('currentDir').textContent = data.output;
+                    });
+                }
+
+                function refreshStatus() {
+                    fetch('/api/status')
+                        .then(response => response.json())
+                        .then(data => {
+                            // CPU
+                            document.getElementById('cpuUsage').textContent = `${data.cpu_usage}%`;
+                            document.getElementById('cpuBar').style.width = `${data.cpu_usage}%`;
+                            
+                            // RAM
+                            const ramUsedGB = (data.ram_used / 1024 / 1024 / 1024).toFixed(2);
+                            const ramTotalGB = (data.ram_total / 1024 / 1024 / 1024).toFixed(2);
+                            const ramPercent = data.ram_percent;
+                            document.getElementById('ramUsage').textContent = `${ramUsedGB}GB / ${ramTotalGB}GB (${ramPercent}%)`;
+                            document.getElementById('ramBar').style.width = `${ramPercent}%`;
+                            
+                            // Disk
+                            const diskUsedGB = (data.disk_used / 1024 / 1024 / 1024).toFixed(2);
+                            const diskTotalGB = (data.disk_total / 1024 / 1024 / 1024).toFixed(2);
+                            const diskPercent = data.disk_percent;
+                            document.getElementById('diskUsage').textContent = `${diskUsedGB}GB / ${diskTotalGB}GB (${diskPercent}%)`;
+                            document.getElementById('diskBar').style.width = `${diskPercent}%`;
+                            
+                            // Other info
+                            document.getElementById('uptime').textContent = data.uptime;
+                            document.getElementById('platform').textContent = data.platform;
+                            document.getElementById('processCount').textContent = data.process_count;
+                            document.getElementById('cpuCores').textContent = data.cpu_cores;
+                        })
+                        .catch(error => {
+                            console.error('Status update failed:', error);
+                        });
+                }
+
+                function testPing() {
+                    const pingElement = document.getElementById('pingStatus');
+                    pingElement.innerHTML = '⏳ Testing ping...';
+                    
+                    fetch('/api/ping', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ host: 'google.com' })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            pingElement.innerHTML = `✅ ${data.ping_time}`;
+                        } else {
+                            pingElement.innerHTML = `❌ Failed: ${data.error}`;
+                        }
+                    })
+                    .catch(error => {
+                        pingElement.innerHTML = `❌ Error: ${error}`;
                     });
                 }
 
@@ -197,6 +381,7 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                             output.innerHTML += `\n\n<span class="error">✗ Error:</span>\n${data.error}`;
                         }
                         loadFiles(); // Refresh file list
+                        refreshStatus(); // Refresh status
                     })
                     .catch(error => {
                         output.innerHTML = `<span class="error">✗ Request failed: ${error}</span>`;
@@ -274,6 +459,7 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                         if (data.error) {
                             output.innerHTML += `\n\n<span class="error">✗ Error:</span>\n${data.error}`;
                         }
+                        refreshStatus();
                     });
                 }
 
@@ -323,6 +509,96 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-type', 'text/html')
         self.end_headers()
         self.wfile.write(html.encode('utf-8'))
+    
+    def get_system_status(self):
+        try:
+            # CPU usage
+            cpu_usage = psutil.cpu_percent(interval=1)
+            
+            # RAM usage
+            ram = psutil.virtual_memory()
+            ram_used = ram.used
+            ram_total = ram.total
+            ram_percent = ram.percent
+            
+            # Disk usage
+            disk = psutil.disk_usage('.')
+            disk_used = disk.used
+            disk_total = disk.total
+            disk_percent = disk.percent
+            
+            # System info
+            uptime = datetime.datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
+            platform_info = f"{platform.system()} {platform.release()}"
+            process_count = len(psutil.pids())
+            cpu_cores = psutil.cpu_count()
+            
+            status_data = {
+                'cpu_usage': round(cpu_usage, 1),
+                'ram_used': ram_used,
+                'ram_total': ram_total,
+                'ram_percent': ram_percent,
+                'disk_used': disk_used,
+                'disk_total': disk_total,
+                'disk_percent': disk_percent,
+                'uptime': uptime,
+                'platform': platform_info,
+                'process_count': process_count,
+                'cpu_cores': cpu_cores
+            }
+            
+            self.send_json_response(status_data)
+            
+        except Exception as e:
+            self.send_json_response({'error': f'Status error: {str(e)}'}, 500)
+    
+    def test_ping(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            host = data.get('host', 'google.com')
+            
+            # Ping command
+            if platform.system().lower() == 'windows':
+                command = f"ping -n 1 {host}"
+            else:
+                command = f"ping -c 1 {host}"
+            
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
+                # Extract ping time from output
+                if 'time=' in stdout:
+                    ping_time = stdout.split('time=')[1].split(' ')[0]
+                    self.send_json_response({
+                        'success': True,
+                        'ping_time': ping_time,
+                        'output': stdout
+                    })
+                else:
+                    self.send_json_response({
+                        'success': True,
+                        'ping_time': 'Connected',
+                        'output': stdout
+                    })
+            else:
+                self.send_json_response({
+                    'success': False,
+                    'error': stderr or 'Ping failed',
+                    'output': stdout
+                })
+                
+        except Exception as e:
+            self.send_json_response({'success': False, 'error': str(e)}, 500)
     
     def list_files(self):
         try:
@@ -452,12 +728,21 @@ def get_local_ip():
 def main():
     PORT = 8080
     
+    # Install psutil if not available
+    try:
+        import psutil
+    except ImportError:
+        print("Installing psutil...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "psutil"])
+        import psutil
+    
     # Get local IP
     local_ip = get_local_ip()
     
     print("🚀 Starting Termux Web Shell Server...")
     print(f"📱 Local: http://localhost:{PORT}")
     print(f"🌐 Network: http://{local_ip}:{PORT}")
+    print(f"📊 System monitoring enabled")
     print("📂 Serving from:", os.getcwd())
     print("⏹️  Press Ctrl+C to stop")
     
