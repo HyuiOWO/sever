@@ -11,14 +11,16 @@ from pathlib import Path
 import datetime
 import sys
 import urllib.parse
+import tempfile
 
 class WebShellHandler(http.server.SimpleHTTPRequestHandler):
     
     # Biến để lưu thời gian bắt đầu
     start_time = datetime.datetime.now()
     
-    # Biến để quản lý process đang chạy
+    # Biến để quản lý process đang chạy và log files
     running_processes = {}
+    process_logs = {}  # Lưu log file path cho mỗi process
     
     def do_GET(self):
         if self.path == '/':
@@ -31,6 +33,8 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
             self.get_system_status()
         elif self.path == '/api/running':
             self.get_running_processes()
+        elif self.path.startswith('/api/log/'):
+            self.get_process_log()
         else:
             super().do_GET()
     
@@ -58,7 +62,7 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Termux Web Shell</title>
+            <title>Termux Web Shell Server</title>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
@@ -123,6 +127,8 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                 .run-btn { background: #006600; }
                 .stop-btn { background: #cc0000; }
                 .stop-btn:hover { background: #ff0000; }
+                .log-btn { background: #0088cc; }
+                .log-btn:hover { background: #00aaff; }
                 .success { color: #00ff00; }
                 .error { color: #ff0000; }
                 .warning { color: #ffff00; }
@@ -236,12 +242,82 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                     border-bottom: 1px solid #004400;
                 }
                 
-                .bg-process {
-                    background: #004400;
+                .process-info {
+                    flex: 1;
+                }
+                
+                .process-actions {
+                    display: flex;
+                    gap: 5px;
+                }
+                
+                .log-modal {
+                    display: none;
+                    position: fixed;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: #1e1e1e;
+                    border: 2px solid #00ff00;
+                    border-radius: 10px;
+                    padding: 20px;
+                    z-index: 1000;
+                    width: 90%;
+                    max-width: 800px;
+                    max-height: 80vh;
+                    box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+                }
+                
+                .log-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 15px;
+                    border-bottom: 1px solid #00ff00;
+                    padding-bottom: 10px;
+                }
+                
+                .log-content {
+                    background: #000;
+                    color: #00ff00;
+                    padding: 15px;
+                    border-radius: 5px;
+                    max-height: 60vh;
+                    overflow-y: auto;
+                    font-family: 'Courier New', monospace;
+                    white-space: pre-wrap;
+                    font-size: 12px;
+                }
+                
+                .close-btn {
+                    background: #cc0000;
+                    color: white;
+                    border: none;
                     padding: 5px 10px;
                     border-radius: 3px;
+                    cursor: pointer;
+                }
+                
+                .close-btn:hover {
+                    background: #ff0000;
+                }
+                
+                .overlay {
+                    display: none;
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.8);
+                    z-index: 999;
+                }
+                
+                .refresh-log-btn {
+                    background: #0088cc;
+                    padding: 5px 10px;
                     font-size: 12px;
-                    color: #00ff00;
+                    margin-left: 10px;
                 }
             </style>
         </head>
@@ -325,11 +401,28 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </div>
 
+            <!-- Log Modal -->
+            <div class="overlay" id="overlay" onclick="closeLogModal()"></div>
+            <div class="log-modal" id="logModal">
+                <div class="log-header">
+                    <h3>📋 Process Log: <span id="logTitle"></span></h3>
+                    <div>
+                        <button class="refresh-log-btn" onclick="refreshCurrentLog()">🔄 Refresh</button>
+                        <button class="close-btn" onclick="closeLogModal()">✕ Close</button>
+                    </div>
+                </div>
+                <div class="log-content" id="logContent">
+                    Loading log content...
+                </div>
+            </div>
+
             <script>
                 let currentFile = '';
                 let statusInterval;
                 let commandRunning = false;
                 let runningFiles = {};
+                let currentLogFile = '';
+                let logRefreshInterval = null;
                 
                 // Load initial data
                 document.addEventListener('DOMContentLoaded', function() {
@@ -384,12 +477,18 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                                 processesContainer.style.display = 'block';
                                 processList.innerHTML = '';
                                 
-                                Object.entries(data.processes).forEach(([filename, pid]) => {
+                                Object.entries(data.processes).forEach(([filename, processInfo]) => {
                                     const processItem = document.createElement('div');
                                     processItem.className = 'process-item';
                                     processItem.innerHTML = `
-                                        <span>📄 ${filename} (PID: ${pid})</span>
-                                        <button class="stop-btn" onclick="stopProcess('${filename}')">🛑 Stop</button>
+                                        <div class="process-info">
+                                            <strong>📄 ${filename}</strong><br>
+                                            <small>PID: ${processInfo.pid} | Started: ${processInfo.start_time}</small>
+                                        </div>
+                                        <div class="process-actions">
+                                            <button class="log-btn" onclick="viewProcessLog('${filename}')">📋 View Log</button>
+                                            <button class="stop-btn" onclick="stopProcess('${filename}')">🛑 Stop</button>
+                                        </div>
                                     `;
                                     processList.appendChild(processItem);
                                 });
@@ -400,6 +499,52 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                         .catch(error => {
                             console.error('Check processes failed:', error);
                         });
+                }
+
+                function viewProcessLog(filename) {
+                    currentLogFile = filename;
+                    document.getElementById('logTitle').textContent = filename;
+                    document.getElementById('logModal').style.display = 'block';
+                    document.getElementById('overlay').style.display = 'block';
+                    
+                    refreshCurrentLog();
+                    
+                    // Auto-refresh log every 2 seconds
+                    if (logRefreshInterval) {
+                        clearInterval(logRefreshInterval);
+                    }
+                    logRefreshInterval = setInterval(refreshCurrentLog, 2000);
+                }
+
+                function refreshCurrentLog() {
+                    if (!currentLogFile) return;
+                    
+                    fetch(`/api/log/${currentLogFile}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            const logContent = document.getElementById('logContent');
+                            if (data.success) {
+                                logContent.textContent = data.log || 'No output yet...';
+                                // Auto scroll to bottom
+                                logContent.scrollTop = logContent.scrollHeight;
+                            } else {
+                                logContent.textContent = `Error: ${data.error}`;
+                            }
+                        })
+                        .catch(error => {
+                            document.getElementById('logContent').textContent = `Failed to load log: ${error}`;
+                        });
+                }
+
+                function closeLogModal() {
+                    document.getElementById('logModal').style.display = 'none';
+                    document.getElementById('overlay').style.display = 'none';
+                    currentLogFile = '';
+                    
+                    if (logRefreshInterval) {
+                        clearInterval(logRefreshInterval);
+                        logRefreshInterval = null;
+                    }
                 }
 
                 function stopProcess(filename) {
@@ -414,6 +559,11 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                             alert(data.message);
                             checkRunningProcesses();
                             loadFiles(); // Refresh file list to update buttons
+                            
+                            // Close log modal if viewing this process
+                            if (currentLogFile === filename) {
+                                closeLogModal();
+                            }
                         })
                         .catch(error => {
                             alert('Error stopping process: ' + error);
@@ -580,7 +730,12 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                                         fileItem.innerHTML = `
                                             <span onclick="viewFile('${file}')">📄 ${file}</span>
                                             <div class="file-actions">
-                                                <button class="${buttonClass}" onclick="${isRunning ? `stopProcess('${file}')` : `runFile('${file}')`}">${buttonText}</button>
+                                                ${isRunning ? `
+                                                    <button class="log-btn" onclick="viewProcessLog('${file}')">📋 Log</button>
+                                                    <button class="${buttonClass}" onclick="stopProcess('${file}')">${buttonText}</button>
+                                                ` : `
+                                                    <button class="${buttonClass}" onclick="runFile('${file}')">${buttonText}</button>
+                                                `}
                                                 <button onclick="deleteFile('${file}')">Delete</button>
                                             </div>
                                         `;
@@ -719,6 +874,10 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
                         .then(data => {
                             alert(data.message);
                             loadFiles();
+                        // Close log modal if viewing this file
+                            if (currentLogFile === filename) {
+                                closeLogModal();
+                            }
                         });
                     }
                 }
@@ -775,11 +934,49 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
     def get_running_processes(self):
         """Get list of running processes"""
         try:
+            processes_info = {}
+            for filename, process_info in self.running_processes.items():
+                processes_info[filename] = {
+                    'pid': process_info['pid'],
+                    'start_time': process_info['start_time']
+                }
+            
             self.send_json_response({
-                'processes': self.running_processes
+                'processes': processes_info
             })
         except Exception as e:
             self.send_json_response({'error': str(e)}, 500)
+    
+    def get_process_log(self):
+        """Get log content for a running process"""
+        try:
+            filename = self.path.split('/')[-1]
+            
+            if filename in self.running_processes:
+                log_file = self.running_processes[filename]['log_file']
+                if os.path.exists(log_file):
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        log_content = f.read()
+                    self.send_json_response({
+                        'success': True,
+                        'log': log_content
+                    })
+                else:
+                    self.send_json_response({
+                        'success': True,
+                        'log': 'Log file not found or no output yet...'
+                    })
+            else:
+                self.send_json_response({
+                    'success': False,
+                    'error': 'Process not found or not running'
+                })
+                
+        except Exception as e:
+            self.send_json_response({
+                'success': False,
+                'error': f'Error reading log: {str(e)}'
+            }, 500)
     
     def stop_process(self, post_data):
         """Stop a running process"""
@@ -788,15 +985,23 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
             filename = data.get('filename', '')
             
             if filename in self.running_processes:
-                pid = self.running_processes[filename]
+                process_info = self.running_processes[filename]
+                pid = process_info['pid']
+                log_file = process_info['log_file']
+                
                 try:
                     # Kill the process
                     os.kill(pid, 9)
+                    # Remove log file
+                    if os.path.exists(log_file):
+                        os.remove(log_file)
                     # Remove from running processes
                     del self.running_processes[filename]
                     self.send_json_response({'message': f'Stopped {filename} (PID: {pid})'})
                 except ProcessLookupError:
                     # Process already dead
+                    if os.path.exists(log_file):
+                        os.remove(log_file)
                     del self.running_processes[filename]
                     self.send_json_response({'message': f'Process {filename} was already stopped'})
                 except Exception as e:
@@ -880,26 +1085,39 @@ class WebShellHandler(http.server.SimpleHTTPRequestHandler):
             filename = data.get('filename', '')
             
             if run_in_background:
-                # Run command in background to avoid blocking web server
+                # Tạo log file cho process
+                log_file = f"/tmp/{filename}_{int(time.time())}.log"
+                
+                # Run command in background và redirect output to log file
                 process = subprocess.Popen(
-                    command,
+                    f"{command} > {log_file} 2>&1 & echo $!",
                     shell=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True
                 )
+                stdout, stderr = process.communicate()
                 
-                # Store process info
-                if filename:
-                    self.running_processes[filename] = process.pid
-                
-                response = {
-                    'background': True,
-                    'pid': process.pid,
-                    'filename': filename,
-                    'message': f'Process started with PID: {process.pid}'
-                }
-                self.send_json_response(response)
+                if process.returncode == 0:
+                    pid = int(stdout.strip())
+                    # Lưu thông tin process
+                    self.running_processes[filename] = {
+                        'pid': pid,
+                        'log_file': log_file,
+                        'start_time': datetime.datetime.now().strftime("%H:%M:%S")
+                    }
+                    
+                    response = {
+                        'background': True,
+                        'pid': pid,
+                        'filename': filename,
+                        'message': f'Process started with PID: {pid}'
+                    }
+                    self.send_json_response(response)
+                else:
+                    self.send_json_response({
+                        'error': f'Failed to start process: {stderr}'
+                    }, 500)
                 
             else:
                 # Run command normally (blocking)
@@ -1011,7 +1229,7 @@ def main():
     print(f"🌐 Network: http://{local_ip}:{PORT}")
     print(f"⏰ Server started at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("📂 Serving from:", os.getcwd())
-    print("🔥 Background processes enabled")
+    print("🔥 Background processes with LOGS enabled")
     print("⏹️  Press Ctrl+C to stop")
     
     with socketserver.TCPServer(("", PORT), WebShellHandler) as httpd:
@@ -1020,10 +1238,13 @@ def main():
         except KeyboardInterrupt:
             print("\n🛑 Server stopped")
             # Kill all running processes when server stops
-            for filename, pid in WebShellHandler.running_processes.items():
+            for filename, process_info in WebShellHandler.running_processes.items():
                 try:
-                    os.kill(pid, 9)
-                    print(f"🛑 Killed {filename} (PID: {pid})")
+                    os.kill(process_info['pid'], 9)
+                    # Remove log file
+                    if os.path.exists(process_info['log_file']):
+                        os.remove(process_info['log_file'])
+                    print(f"🛑 Killed {filename} (PID: {process_info['pid']})")
                 except:
                     pass
 
