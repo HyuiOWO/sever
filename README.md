@@ -15,3 +15,15 @@ pkg install git
 
 # Cài các tool network
 pkg install net-tools
+
+# Download trực tiếp file Python
+curl -O https://raw.githubusercontent.com/HyuiOWO/sever/main/severTermux.py
+
+# Hoặc dùng wget
+wget https://raw.githubusercontent.com/HyuiOWO/sever/main/severTermux.py
+
+# Cấp quyền thực thi
+chmod +x severTermux.py
+
+# Chạy server
+python severTermux.py
